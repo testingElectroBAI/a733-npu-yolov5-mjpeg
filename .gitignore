@@ -1,0 +1,9 @@
+build/
+*.o
+*.nb
+*.png
+*.mjpeg
+__pycache__/
+# vendor code: never commit the model zoo
+awnpu_model_zoo*/
+original_extract/
