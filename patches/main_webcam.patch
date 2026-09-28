@@ -1,0 +1,210 @@
+--- /home/user/npu-work/original_extract/awnpu_model_zoo-v0.9.0-20260116-83a67d4b/examples/yolov5/main.cpp	2026-01-16 12:44:37.000000000 +0000
++++ /home/user/npu-work/awnpu_model_zoo-v0.9.0-20260116-83a67d4b/examples/yolov5/main.cpp	2026-09-27 19:01:54.655092844 +0000
+@@ -9,15 +9,12 @@
+ #include <string.h>
+ #include <sys/time.h>
+ 
+-
++#include <opencv2/core/core.hpp>
++#include <opencv2/highgui/highgui.hpp>
+ 
+ #include "npulib.h"
+ #include "model_config.h"
+ 
+-/*-------------------------------------------
+-        Macros and Variables
+--------------------------------------------*/
+-
+ extern uint8_t *yolov5_preprocess(const char* imagepath, unsigned int *data_size);
+ extern int yolov5_preprocess_no_copy(const char* imagepath, void* buff_ptr, unsigned int buff_size);
+ extern int yolov5_postprocess(const char *imagepath, float **output);
+@@ -25,7 +22,7 @@
+ const char *usage =
+     "model_demo -nb modle_path -i input_path -l loop_run_count -m malloc_mbyte \n"
+     "-nb modle_path:    the NBG file path.\n"
+-    "-i input_path:     the input file path.\n"
++    "-i input_path:     the input file path, or 'webcam' for live capture.\n"
+     "-l loop_run_count: the number of loop run network.\n"
+     "-m malloc_mbyte:   npu_unit init memory Mbytes.\n"
+     "-h : help\n"
+@@ -41,7 +38,6 @@
+     TIME_IDX_MAX = 9
+ };
+ 
+-
+ #if defined(__linux__)
+ #define TIME_SLOTS   10
+ static uint64_t time_begin[TIME_SLOTS];
+@@ -69,11 +65,10 @@
+ }
+ #endif
+ 
+-
+ int main(int argc, char** argv)
+ {
+     int status = 0;
+-    int i = 0, k = 0, j = 0;
++    int i = 0;
+     unsigned int count = 0;
+     long long total_infer_time = 0;
+ 
+@@ -110,16 +105,12 @@
+     if (model_file == nullptr)
+         return -1;
+ 
+-    /* NPU init*/
+     NpuUint npu_uint;
+-
+-//    int ret = npu_uint.npu_init(malloc_mbyte*1024*1024);    // 85x
+     int ret = npu_uint.npu_init();
+     if (ret != 0) {
+         return -1;
+     }
+ 
+-
+     NetworkItem yolov5;
+     unsigned int network_id = 0;
+     status = yolov5.network_create(model_file, network_id);
+@@ -134,54 +125,71 @@
+         return -1;
+     }
+ 
++    int output_cnt = yolov5.get_output_cnt();
++    float **output_data = new float*[output_cnt]();
++    for (int oi = 0; oi < output_cnt; oi++)
++        output_data[oi] = new float[yolov5.m_output_data_len[oi]];
+ 
+-    TimeBegin(NETWORK_PREPROCESS);
+-#if 0
+-    // input jpg file
+-    void *file_data = nullptr;
+-    unsigned int file_data_size = 0;
+-    file_data = (void *)yolov5_preprocess(input_file, &file_data_size);
++    /* ---- WEBCAM LIVE MODE ---- */
++    if (input_file != nullptr && !strcmp(input_file, "webcam")) {
++        cv::VideoCapture cap(0, cv::CAP_V4L2);
++        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M','J','P','G'));
++        cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
++        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+ 
+-    status = yolov5.network_load_input_buffer(file_data, file_data_size);
+-    if (status != 0) {
+-        printf("network load input file fail, status=%d\n", status);
+-    }
+-    if (file_data != nullptr) {
+-        free(file_data);
+-        file_data = nullptr;
++        if (!cap.isOpened()) {
++            printf("ERROR: cannot open webcam /dev/video0\n");
++            return -1;
++        }
++
++        const char* capture_path = "capture.jpg";
++
++        while (true) {
++            cv::Mat frame;
++            cap >> frame;
++            if (frame.empty()) continue;
++            cv::imwrite(capture_path, frame);
++
++            void *input_buffer_ptr = nullptr;
++            unsigned int input_buffer_size = 0;
++            yolov5.get_network_input_buff_info(0, &input_buffer_ptr, &input_buffer_size);
++            yolov5_preprocess_no_copy(capture_path, input_buffer_ptr, input_buffer_size);
++
++            status = yolov5.network_input_output_set();
++            if (status != 0) {
++                printf("set network input/output failed.\n");
++                break;
++            }
++
++            status = yolov5.network_run();
++            if (status != 0) {
++                printf("fail to run network, status=%d\n", status);
++                break;
++            }
++
++            yolov5.get_output(output_data);
++            yolov5_postprocess(capture_path, output_data);
++        }
++
++        for (int oi = 0; oi < output_cnt; oi++) delete[] output_data[oi];
++        delete[] output_data;
++        return 0;
+     }
+-#else
+-    // input jpg file, no copy way
++    /* ---- END WEBCAM MODE, original single-image path below unchanged ---- */
++
++    TimeBegin(NETWORK_PREPROCESS);
+     void *input_buffer_ptr = nullptr;
+     unsigned int input_buffer_size = 0;
+     yolov5.get_network_input_buff_info(0, &input_buffer_ptr, &input_buffer_size);
+-
+     printf("buffer ptr: %p, buffer size: %d \n", input_buffer_ptr, input_buffer_size);
+-
+     yolov5_preprocess_no_copy(input_file, input_buffer_ptr, input_buffer_size);
+-#endif
+-
+     TimeEnd(NETWORK_PREPROCESS);
+     printf("feed input cost: %lu us.\n", (unsigned long)TimeGet(NETWORK_PREPROCESS));
+ 
+-//    status = yolov5.network_load_input_yuv_file(&input_file, LETTERBOX_COLS, LETTERBOX_ROWS);
+-
+-
+-    // create yolov5 output buffer
+-    int output_cnt = yolov5.get_output_cnt();     // network output count
+-
+-    float **output_data = new float*[output_cnt]();
+-
+-    for (int i = 0; i < output_cnt; i++)
+-        output_data[i] = new float[yolov5.m_output_data_len[i]];
+-
+-
+     i = network_id;
+-    /* run network */
+     TimeBegin(NETWORK_LOOP);
+     while (count < loop_count) {
+         count++;
+-
+         printf("network: %d, loop count: %d\n", i, count);
+         status = yolov5.network_input_output_set();
+         if (status != 0) {
+@@ -205,12 +213,8 @@
+         #endif
+ 
+         total_infer_time += (unsigned long)TimeGet(NETWORK_RUN);
+-
+         yolov5.get_output(output_data);
+-
+-
+         yolov5_postprocess(input_file, output_data);
+-
+     }
+     TimeEnd(NETWORK_LOOP);
+ 
+@@ -219,21 +223,12 @@
+                 (uint32_t)(total_infer_time / loop_count), (unsigned int)(TimeGet(NETWORK_LOOP) / loop_count));
+     }
+ 
+-
+-    // free output buffer
+-    for (int i = 0; i < output_cnt; i++) {
+-        delete[] output_data[i];
+-        output_data[i] = nullptr;
++    for (int oi = 0; oi < output_cnt; oi++) {
++        delete[] output_data[oi];
++        output_data[oi] = nullptr;
+     }
+-
+     if (output_data != nullptr)
+         delete[] output_data;
+ 
+-//exit:
+-    /* exit function run in NetworkItem::~NetworkItem()*/
+-//    yolov5.network_finish();
+-//    yolov5.network_destroy();
+-
+     return ret;
+ }
+-
