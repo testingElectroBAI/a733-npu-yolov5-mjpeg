@@ -123,7 +123,7 @@ Also put the `.nb` model and the NPU shared libraries in `~/deploy` (both come f
 diff -u <original_extract>/examples/yolov5/main.cpp <zoo>/examples/yolov5/main.cpp > patches/main_webcam.patch
 ```
 
-`apply_patch.sh` applies it automatically when the file is present.
+`apply_patch.sh` applies it automatically when the file is present. The bundled patch was made against `awnpu_model_zoo-v0.9.0-20260116` and may not apply cleanly to other versions.
 
 ## Run
 
